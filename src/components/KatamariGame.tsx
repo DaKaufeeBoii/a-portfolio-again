@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { X, Trophy, RotateCcw, Navigation, MousePointer, Keyboard } from 'lucide-react';
+import * as THREE from 'three';
+import { X, Trophy, RotateCcw, Navigation, Zap } from 'lucide-react';
 import { soundFx } from '../utils/soundEffects';
+import { KatamariIcon } from './KatamariIcon';
 
 interface KatamariGameProps {
   isOpen: boolean;
@@ -11,19 +13,15 @@ interface RollableNode {
   id: number;
   el: HTMLElement;
   text: string;
-  docX: number;
-  docY: number;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
   width: number;
   height: number;
-  vol: number;
-  radius: number;
   color: string;
   bgColor: string;
   absorbed: boolean;
-  // Attached 3D spherical coordinates relative to ball center
-  orbitDist: number;
-  theta: number; // latitude
-  phi: number;   // longitude
 }
 
 interface Particle {
@@ -38,20 +36,104 @@ interface Particle {
 }
 
 const KING_QUOTES = [
-  "We are pleased! Roll up Kaufee's tech stack into a magnificent celestial sphere!",
-  "Oho! Look at that delicious Python backend badge spinning around!",
+  "We are pleased! Roll up Sai Tarun's tech stack into a magnificent 3D celestial sphere!",
+  "Oho! Look at that delicious Python backend badge spinning on the Katamari!",
   "CGPA 8.49 absorbed! Truly an intellectually dense Katamari!",
-  "Look at that Ollama local agent spinning around the sphere!",
-  "Magnificent! Even the terminal emulator cannot escape our royal gravity!",
+  "Look at that Ollama local agent tumbling around the sphere!",
+  "Magnificent! Even the terminal emulator cannot escape our royal 3D gravity!",
   "Keep rolling! The Cosmos eagerly awaits this beautiful portfolio star!",
-  "Delicious! A ProjectPulse Kanban board has been rolled up!",
+  "Delicious! A ProjectPulse Kanban board has joined the clump!",
   "Splendid work! We shall place this Katamari in the night sky as a constellation!"
 ];
 
+const SECTIONS = [
+  { id: 'hero', label: 'Hero', selector: 'header, #root > div > main > section:first-of-type' },
+  { id: 'projects', label: 'Projects', selector: '#projects' },
+  { id: 'sandbox', label: 'Sandbox', selector: '#ai-sandbox' },
+  { id: 'experience', label: 'Timeline', selector: '#experience' },
+  { id: 'skills', label: 'Skills', selector: '#skills' },
+  { id: 'achievements', label: 'Awards', selector: '#achievements' },
+  { id: 'contact', label: 'Contact', selector: '#contact' },
+];
+
+function circleIntersectsRect(
+  cx: number,
+  cy: number,
+  r: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number
+): boolean {
+  const closestX = Math.max(left, Math.min(cx, right));
+  const closestY = Math.max(top, Math.min(cy, bottom));
+  const dx = cx - closestX;
+  const dy = cy - closestY;
+  return dx * dx + dy * dy <= r * r;
+}
+
+// Generate dynamic 3D text badge mesh attached to the Katamari ball
+function createAttached3DBadge(text: string, color: string, ballRadius: number, ballGroup: THREE.Group): THREE.Mesh {
+  const canvas = document.createElement('canvas');
+  canvas.width = 160;
+  canvas.height = 44;
+  const ctx = canvas.getContext('2d')!;
+
+  // Rounded pill background
+  ctx.fillStyle = 'rgba(10, 12, 20, 0.95)';
+  ctx.beginPath();
+  ctx.roundRect(4, 4, 152, 36, 18);
+  ctx.fill();
+
+  // Vibrant accent border
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = color || '#F5A623';
+  ctx.stroke();
+
+  // Label text
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 15px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text.slice(0, 14), 80, 22);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const mat = new THREE.MeshStandardMaterial({
+    map: texture,
+    transparent: true,
+    roughness: 0.35,
+    side: THREE.DoubleSide,
+  });
+
+  const geo = new THREE.PlaneGeometry(28, 8);
+  const mesh = new THREE.Mesh(geo, mat);
+
+  // Position on outer sphere surface
+  const randomDir = new THREE.Vector3(
+    Math.random() - 0.5,
+    Math.random() - 0.5,
+    Math.random() - 0.5
+  ).normalize();
+
+  // Transform world direction to local coordinates of current ball orientation
+  const localDir = randomDir.clone().applyQuaternion(ballGroup.quaternion.clone().invert());
+  mesh.position.copy(localDir.multiplyScalar(ballRadius + 2 + Math.random() * 4));
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), localDir);
+
+  return mesh;
+}
+
 export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) => {
+  const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const attachedContainerRef = useRef<HTMLDivElement>(null);
+  const particleCanvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   const [diameterDisplay, setDiameterDisplay] = useState('24cm 6mm');
   const [itemsCollected, setItemsCollected] = useState(0);
@@ -60,47 +142,43 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
   const [gameWon, setGameWon] = useState(false);
   const [showHint, setShowHint] = useState(true);
   const [scrollProgress, setScrollProgress] = useState(0);
-  const [controlMode, setControlMode] = useState<'keyboard' | 'mouse'>('keyboard');
 
-  // Internal physics & gameplay state
+  // Core physics & game state
+  // Notice: ball radius is kept constant (~32px) like Google's Katamari!
+  const BALL_RADIUS = 32;
+
   const stateRef = useRef<{
     docX: number;
     docY: number;
     vx: number;
     vy: number;
-    radius: number;
-    vol: number;
-    rollTh: number;  // Direction heading
-    rollPhi: number; // Pitch rotation
     keys: Set<string>;
     nodes: RollableNode[];
-    attached: RollableNode[];
     particles: Particle[];
     isBoosting: boolean;
     mouseTarget: { x: number; y: number; active: boolean; isDown: boolean };
     score: number;
+    attachedMeshes: THREE.Mesh[];
   }>({
     docX: 0,
     docY: 0,
     vx: 0,
     vy: 0,
-    radius: 28, // initial radius in pixels (~24cm)
-    vol: (4 * Math.PI * Math.pow(28, 3)) / 3,
-    rollTh: 0,
-    rollPhi: 0,
     keys: new Set(),
     nodes: [],
-    attached: [],
     particles: [],
     isBoosting: false,
     mouseTarget: { x: 0, y: 0, active: false, isDown: false },
     score: 0,
+    attachedMeshes: [],
   });
 
-  // Calculate formatted Katamari diameter (cm, m, km)
-  const formatDiameter = (radiusPx: number) => {
-    // 28px ~= 24.6 cm
-    const totalCm = (radiusPx / 28) * 24.6;
+  // Calculate formatted diameter based on items collected
+  const getSimulatedDiameter = (score: number) => {
+    const baseCm = 24.6;
+    const addedCm = score * 3.8;
+    const totalCm = baseCm + addedCm;
+
     if (totalCm < 100) {
       const cm = Math.floor(totalCm);
       const mm = Math.floor((totalCm - cm) * 10);
@@ -114,7 +192,7 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
     }
   };
 
-  // Scan and register DOM elements across the portfolio (Kathack-style)
+  // Scan live DOM elements on the portfolio
   const scanPortfolioElements = useCallback(() => {
     const selector = [
       '.tech-pill',
@@ -128,11 +206,12 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
       'h3',
       'h4',
       '.project-card',
-      '.glass-panel',
       '.stat-card',
       'code',
       'a.pill',
-      'span.tag'
+      'span.tag',
+      'p strong',
+      '.card'
     ].join(', ');
 
     const elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
@@ -143,20 +222,19 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
     const scrollY = window.scrollY || window.pageYOffset;
 
     elements.forEach((el) => {
-      // Exclude Katamari UI elements
+      // Exclude Katamari game UI elements
       if (
         el.closest('.katamari-hud') ||
         el.closest('.katamari-layer') ||
         el.closest('.katamari-king-bubble') ||
-        el.closest('.katamari-minimap') ||
-        el.closest('.katamari-attached-container')
+        el.closest('.katamari-minimap')
       ) {
         return;
       }
 
       const rect = el.getBoundingClientRect();
-      if (rect.width > 12 && rect.height > 10 && rect.width < 1200 && rect.height < 900) {
-        const text = el.innerText?.trim().slice(0, 28) || el.tagName.toLowerCase();
+      if (rect.width > 8 && rect.height > 8 && rect.width < 1200 && rect.height < 900) {
+        const text = el.innerText?.trim().slice(0, 26) || el.tagName.toLowerCase();
         if (!text) return;
 
         const style = window.getComputedStyle(el);
@@ -165,97 +243,254 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
           ? style.backgroundColor
           : 'rgba(245, 166, 35, 0.2)';
 
-        const w = rect.width;
-        const h = rect.height;
-        // Volume formula based on Kathack: w * h * min(w, h)
-        const vol = w * h * Math.min(w, h);
-        const radius = Math.max(12, Math.hypot(w, h) / 2);
+        const left = rect.left + scrollX;
+        const top = rect.top + scrollY;
 
         validNodes.push({
           id: idCounter++,
           el,
           text,
-          docX: rect.left + scrollX + w / 2,
-          docY: rect.top + scrollY + h / 2,
-          width: w,
-          height: h,
-          vol,
-          radius,
+          left,
+          top,
+          right: left + rect.width,
+          bottom: top + rect.height,
+          width: rect.width,
+          height: rect.height,
           color,
           bgColor,
           absorbed: false,
-          orbitDist: 0,
-          theta: (Math.random() - 0.5) * Math.PI,
-          phi: Math.random() * Math.PI * 2,
         });
       }
     });
 
     stateRef.current.nodes = validNodes;
-    setTotalItems(Math.min(validNodes.length, 80));
+    setTotalItems(Math.min(validNodes.length, 90));
   }, []);
 
-  // Restore any hidden / absorbed elements cleanly
+  // Restore elements and reset game state
   const restoreElements = useCallback(() => {
     stateRef.current.nodes.forEach((item: RollableNode) => {
       item.el.classList.remove('katamari-absorbed');
     });
-    stateRef.current.attached = [];
+
+    // Remove attached 3D meshes
+    stateRef.current.attachedMeshes.forEach((mesh) => {
+      if (mesh.parent) mesh.parent.remove(mesh);
+      mesh.geometry.dispose();
+      if (Array.isArray(mesh.material)) {
+        mesh.material.forEach((m) => m.dispose());
+      } else {
+        mesh.material.dispose();
+      }
+    });
+    stateRef.current.attachedMeshes = [];
+
     stateRef.current.score = 0;
-    stateRef.current.radius = 28;
-    stateRef.current.vol = (4 * Math.PI * Math.pow(28, 3)) / 3;
     setDiameterDisplay('24cm 6mm');
     setItemsCollected(0);
     setGameWon(false);
-
-    if (attachedContainerRef.current) {
-      attachedContainerRef.current.innerHTML = '';
-    }
   }, []);
 
-  // Setup game loop & event listeners
+  // Warp ball directly to any section
+  const warpToSection = (sectionId: string) => {
+    const el = document.getElementById(sectionId) || document.querySelector(`[href="#${sectionId}"]`);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      const scrollY = window.scrollY || window.pageYOffset;
+      stateRef.current.docY = rect.top + scrollY + 120;
+      stateRef.current.docX = window.innerWidth / 2;
+      stateRef.current.vx = 0;
+      stateRef.current.vy = 0;
+      soundFx.boostRing();
+    }
+  };
+
+  // Main Three.js Lifecycle & Game Loop
   useEffect(() => {
     if (!isOpen) {
       restoreElements();
       return;
     }
 
-    // Initialize position centered in current viewport
+    // Disable CSS smooth-scroll so window.scrollTo tracking is 60fps instant
+    const originalHtmlScroll = document.documentElement.style.scrollBehavior;
+    const originalBodyScroll = document.body.style.scrollBehavior;
+    document.documentElement.style.scrollBehavior = 'auto';
+    document.body.style.scrollBehavior = 'auto';
+
+    // Spawn ball near center of current viewport
     const curScrollY = window.scrollY || window.pageYOffset;
     const s = stateRef.current;
     s.docX = window.innerWidth / 2;
     s.docY = curScrollY + window.innerHeight / 2;
     s.vx = 0;
     s.vy = 0;
-    s.radius = 28;
-    s.vol = (4 * Math.PI * Math.pow(28, 3)) / 3;
     s.score = 0;
-    s.attached = [];
+    s.attachedMeshes = [];
     s.keys.clear();
 
     scanPortfolioElements();
     soundFx.boostRing();
 
-    // Canvas resize
+    // ── Setup Three.js Scene ──
+    const canvas = canvasRef.current;
+    const pCanvas = particleCanvasRef.current;
+    if (!canvas || !pCanvas) return;
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: true,
+      powerPreference: 'high-performance',
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+
+    pCanvas.width = window.innerWidth;
+    pCanvas.height = window.innerHeight;
+    const pCtx = pCanvas.getContext('2d')!;
+
+    // Orthographic camera for 1:1 screen pixel mapping
+    const camera = new THREE.OrthographicCamera(
+      -window.innerWidth / 2,
+      window.innerWidth / 2,
+      window.innerHeight / 2,
+      -window.innerHeight / 2,
+      1,
+      1000
+    );
+    camera.position.set(0, 0, 400);
+
+    const scene = new THREE.Scene();
+
+    // Lighting (neutral ambient + directional highlight)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.25);
+    dirLight.position.set(-180, 240, 350);
+    scene.add(dirLight);
+
+    const softFillLight = new THREE.DirectionalLight(0xfef3c7, 0.4);
+    softFillLight.position.set(200, -150, 200);
+    scene.add(softFillLight);
+
+    // ── Create 3D Katamari Ball ──
+    const ballGroup = new THREE.Group();
+    scene.add(ballGroup);
+
+    // 1. Core Sphere (faceted polygon look like the classic Katamari)
+    const coreGeo = new THREE.IcosahedronGeometry(BALL_RADIUS, 2);
+    const coreMat = new THREE.MeshStandardMaterial({
+      color: 0xf6f8fc,
+      roughness: 0.35,
+      metalness: 0.1,
+      flatShading: true,
+    });
+    const coreMesh = new THREE.Mesh(coreGeo, coreMat);
+    ballGroup.add(coreMesh);
+
+    // 2. Iconic Knobs / Studs in all 3D directions (using icosahedron vertices)
+    const knobColors = [
+      0xef4444, // Red
+      0xf97316, // Orange
+      0xeab308, // Yellow
+      0x22c55e, // Green
+      0x06b6d4, // Cyan
+      0x3b82f6, // Blue
+      0x8b5cf6, // Violet
+      0xec4899, // Pink
+      0xf43f5e, // Rose
+      0x14b8a6, // Teal
+      0xa855f7, // Purple
+      0xf59e0b, // Amber
+    ];
+
+    const vertexIco = new THREE.IcosahedronGeometry(BALL_RADIUS * 0.96, 0);
+    const posAttr = vertexIco.attributes.position;
+
+    for (let i = 0; i < posAttr.count; i++) {
+      const normal = new THREE.Vector3(
+        posAttr.getX(i),
+        posAttr.getY(i),
+        posAttr.getZ(i)
+      ).normalize();
+
+      // Stepped cylinder stud
+      const knobGeo = new THREE.CylinderGeometry(
+        BALL_RADIUS * 0.22,
+        BALL_RADIUS * 0.34,
+        BALL_RADIUS * 0.36,
+        12
+      );
+      const knobMat = new THREE.MeshStandardMaterial({
+        color: knobColors[i % knobColors.length],
+        roughness: 0.3,
+        metalness: 0.1,
+      });
+      const knobMesh = new THREE.Mesh(knobGeo, knobMat);
+
+      knobMesh.position.copy(normal.clone().multiplyScalar(BALL_RADIUS * 0.98));
+      knobMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), normal);
+
+      // White ring tip (iconic concentric ring)
+      const ringGeo = new THREE.TorusGeometry(BALL_RADIUS * 0.16, BALL_RADIUS * 0.045, 8, 16);
+      const ringMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
+      const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+      ringMesh.position.y = BALL_RADIUS * 0.17;
+      ringMesh.rotation.x = Math.PI / 2;
+      knobMesh.add(ringMesh);
+
+      ballGroup.add(knobMesh);
+    }
+
+    // 3. Soft ground contact shadow plane
+    const shadowCanvas = document.createElement('canvas');
+    shadowCanvas.width = 128;
+    shadowCanvas.height = 128;
+    const sCtx = shadowCanvas.getContext('2d')!;
+    const sGrad = sCtx.createRadialGradient(64, 64, 10, 64, 64, 60);
+    sGrad.addColorStop(0, 'rgba(0,0,0,0.45)');
+    sGrad.addColorStop(0.6, 'rgba(0,0,0,0.18)');
+    sGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    sCtx.fillStyle = sGrad;
+    sCtx.fillRect(0, 0, 128, 128);
+
+    const shadowTex = new THREE.CanvasTexture(shadowCanvas);
+    const shadowGeo = new THREE.PlaneGeometry(BALL_RADIUS * 2.8, BALL_RADIUS * 2.8);
+    const shadowMat = new THREE.MeshBasicMaterial({
+      map: shadowTex,
+      transparent: true,
+      depthWrite: false,
+    });
+    const shadowMesh = new THREE.Mesh(shadowGeo, shadowMat);
+    scene.add(shadowMesh);
+
+    // Resize handler
     const handleResize = () => {
-      if (canvasRef.current) {
-        canvasRef.current.width = window.innerWidth;
-        canvasRef.current.height = window.innerHeight;
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      camera.left = -window.innerWidth / 2;
+      camera.right = window.innerWidth / 2;
+      camera.top = window.innerHeight / 2;
+      camera.bottom = -window.innerHeight / 2;
+      camera.updateProjectionMatrix();
+
+      if (particleCanvasRef.current) {
+        particleCanvasRef.current.width = window.innerWidth;
+        particleCanvasRef.current.height = window.innerHeight;
       }
     };
-    handleResize();
     window.addEventListener('resize', handleResize);
 
-    // Keyboard controls
+    // Keyboard handlers
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
       if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd'].includes(key)) {
         e.preventDefault();
         s.keys.add(key);
-        setControlMode('keyboard');
       }
       if (e.shiftKey) s.isBoosting = true;
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
@@ -264,7 +499,7 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
       if (!e.shiftKey) s.isBoosting = false;
     };
 
-    // Mouse / Pointer steering
+    // Mouse steering
     const handleMouseMove = (e: MouseEvent) => {
       s.mouseTarget.x = e.clientX;
       s.mouseTarget.y = e.clientY;
@@ -272,12 +507,10 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
     };
 
     const handleMouseDown = (e: MouseEvent) => {
-      // Left or Right click accelerates towards cursor
       if (e.button === 0 || e.button === 2) {
         s.mouseTarget.isDown = true;
         s.mouseTarget.x = e.clientX;
         s.mouseTarget.y = e.clientY;
-        setControlMode('mouse');
       }
     };
 
@@ -285,7 +518,7 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
       s.mouseTarget.isDown = false;
     };
 
-    // Touch controls for mobile / tablets
+    // Touch controls
     const handleTouchMove = (e: TouchEvent) => {
       if (e.touches.length > 0) {
         s.mouseTarget.x = e.touches[0].clientX;
@@ -307,32 +540,31 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
     window.addEventListener('touchmove', handleTouchMove, { passive: true });
     window.addEventListener('touchend', handleTouchEnd);
 
-    // Game loop
+    // ── Main Game Loop ──
     let lastTime = performance.now();
 
     const loop = (time: number) => {
       const dt = Math.min((time - lastTime) / 1000, 0.1);
       lastTime = time;
 
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-
       const docWidth = document.documentElement.clientWidth || window.innerWidth;
-      const docHeight = Math.max(document.documentElement.scrollHeight, 6000);
+      const docHeight = Math.max(
+        document.body.scrollHeight,
+        document.documentElement.scrollHeight,
+        document.body.offsetHeight,
+        document.documentElement.offsetHeight
+      );
 
-      // --- 1. Physics & Acceleration ---
+      // --- 1. Movement & Input ---
       let ax = 0;
       let ay = 0;
 
-      // Keyboard input
       if (s.keys.has('arrowleft') || s.keys.has('a')) ax -= 1;
       if (s.keys.has('arrowright') || s.keys.has('d')) ax += 1;
       if (s.keys.has('arrowup') || s.keys.has('w')) ay -= 1;
       if (s.keys.has('arrowdown') || s.keys.has('s')) ay += 1;
 
-      // Mouse steering: if mouse is clicked or moved without keys
+      // Mouse steering
       if ((ax === 0 && ay === 0 && s.mouseTarget.isDown) || (s.mouseTarget.active && ax === 0 && ay === 0 && s.keys.size === 0)) {
         const curScroll = window.scrollY || window.pageYOffset;
         const screenBallX = s.docX;
@@ -341,130 +573,118 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
         const dy = s.mouseTarget.y - screenBallY;
         const dist = Math.hypot(dx, dy);
 
-        // Deadzone around ball
-        if (dist > s.radius * 0.8) {
-          const power = s.mouseTarget.isDown ? 1.0 : Math.min(dist / 300, 0.7);
+        if (dist > BALL_RADIUS * 0.7) {
+          const power = s.mouseTarget.isDown ? 1.0 : Math.min(dist / 260, 0.75);
           ax = (dx / dist) * power;
           ay = (dy / dist) * power;
         }
       }
 
-      // Acceleration and speed based on Katamari size
-      const speedMultiplier = s.isBoosting ? 1.8 : 1.0;
-      const baseAccel = (580 + Math.min(s.radius * 2, 400)) * speedMultiplier;
-      const friction = 0.915;
+      // Smooth acceleration with turbo boost
+      const speedMultiplier = s.isBoosting ? 2.4 : 1.0;
+      const baseAccel = 850 * speedMultiplier;
+      const friction = 0.908;
 
       s.vx += ax * baseAccel * dt;
       s.vy += ay * baseAccel * dt;
       s.vx *= friction;
       s.vy *= friction;
 
-      // Position update
+      // Update position
       s.docX += s.vx * dt;
       s.docY += s.vy * dt;
 
-      // Katamari 3D rotation angles
+      // Traversal Clamping
+      s.docX = Math.max(BALL_RADIUS, Math.min(docWidth - BALL_RADIUS, s.docX));
+      s.docY = Math.max(BALL_RADIUS, Math.min(docHeight - BALL_RADIUS, s.docY));
+
+      // --- 2. True 3D Rolling Rotation on World Axis ---
       const speed = Math.hypot(s.vx, s.vy);
-      if (speed > 1) {
-        s.rollTh = Math.atan2(s.vy, s.vx);
-        s.rollPhi -= (speed / s.radius) * dt;
+      if (speed > 0.5) {
+        const rollDist = speed * dt;
+        // Motion direction on screen: (+vx, +vy) -> In Three.js: (+vx, -vy)
+        const moveDir = new THREE.Vector3(s.vx, -s.vy, 0).normalize();
+        const rotAxis = new THREE.Vector3(-moveDir.y, moveDir.x, 0).normalize();
+        ballGroup.rotateOnWorldAxis(rotAxis, rollDist / BALL_RADIUS);
       }
 
-      // Page boundary clamps
-      if (s.docX < s.radius) { s.docX = s.radius; s.vx = -s.vx * 0.4; }
-      if (s.docX > docWidth - s.radius) { s.docX = docWidth - s.radius; s.vx = -s.vx * 0.4; }
-      if (s.docY < s.radius) { s.docY = s.radius; s.vy = -s.vy * 0.4; }
-      if (s.docY > docHeight - s.radius) { s.docY = docHeight - s.radius; s.vy = -s.vy * 0.4; }
+      // Position Three.js 3D Ball & Shadow in Screen Space
+      const screenBallX = s.docX;
+      const screenBallY = s.docY - window.scrollY;
 
-      // --- 2. Camera Tracking (Kathack smooth camera) ---
-      const targetScrollY = s.docY - window.innerHeight / 2;
-      const currentScrollY = window.scrollY || window.pageYOffset;
-      const smoothScrollY = currentScrollY + (targetScrollY - currentScrollY) * 0.16;
-      window.scrollTo(0, Math.max(0, Math.min(docHeight - window.innerHeight, smoothScrollY)));
+      const threeX = screenBallX - window.innerWidth / 2;
+      const threeY = -(screenBallY - window.innerHeight / 2);
 
-      // Mini-map scroll progress
+      ballGroup.position.set(threeX, threeY, 0);
+      shadowMesh.position.set(threeX, threeY - 6, -BALL_RADIUS + 2);
+
+      // --- 3. Camera Tracking across all sections ---
+      const maxScroll = Math.max(0, docHeight - window.innerHeight);
+      const targetScrollY = Math.max(0, Math.min(maxScroll, s.docY - window.innerHeight / 2));
+      window.scrollTo(0, targetScrollY);
+
       setScrollProgress(s.docY / docHeight);
 
-      // --- 3. Collision Detection with Portfolio Elements ---
+      // --- 4. Collision Detection & 3D Element Pickup ---
       for (const node of s.nodes) {
         if (node.absorbed) continue;
 
-        // Kathack volume check: ball volume must be >= node volume * 0.75
-        const canAbsorb = s.vol >= node.vol * 0.75 || s.radius >= node.radius * 0.55;
+        // Accurate geometric intersection with element rectangle
+        const isTouching = circleIntersectsRect(
+          s.docX,
+          s.docY,
+          BALL_RADIUS,
+          node.left,
+          node.top,
+          node.right,
+          node.bottom
+        );
 
-        const dist = Math.hypot(s.docX - node.docX, s.docY - node.docY);
-        if (dist < s.radius + node.radius) {
-          if (canAbsorb) {
-            // Absorb!
-            node.absorbed = true;
-            node.el.classList.add('katamari-absorbed');
+        if (isTouching) {
+          // Absorb!
+          node.absorbed = true;
+          node.el.classList.add('katamari-absorbed');
 
-            // Attach to ball surface at impact coordinates
-            node.orbitDist = s.radius + Math.min(node.radius * 0.35, 18);
-            node.phi = -s.rollPhi + (Math.random() - 0.5) * 0.4;
-            node.theta = (Math.random() - 0.5) * Math.PI * 0.8;
+          // Attach 3D badge directly as a child of the rotating 3D Katamari sphere
+          const badgeMesh = createAttached3DBadge(node.text, node.color, BALL_RADIUS, ballGroup);
+          ballGroup.add(badgeMesh);
+          s.attachedMeshes.push(badgeMesh);
 
-            s.attached.push(node);
-            s.score += 1;
+          s.score += 1;
+          setDiameterDisplay(getSimulatedDiameter(s.score));
+          setItemsCollected(s.score);
 
-            // Kathack growth formula: newVol = getVol() + nodeVol * VOL_MULT
-            const volMult = 0.85;
-            s.vol += node.vol * volMult;
-            // Radius derived from volume: (vol * 3 / 4pi)^(1/3)
-            const newRadius = Math.pow((s.vol * 3) / (4 * Math.PI), 1 / 3);
-            s.radius = Math.min(Math.max(newRadius, s.radius + 1.5), 260);
+          soundFx.collect();
 
-            // Update HUD
-            setDiameterDisplay(formatDiameter(s.radius));
-            setItemsCollected(s.score);
+          // Particle burst
+          for (let p = 0; p < 8; p++) {
+            const a = Math.random() * Math.PI * 2;
+            const spd = 70 + Math.random() * 150;
+            s.particles.push({
+              x: screenBallX,
+              y: screenBallY,
+              vx: Math.cos(a) * spd,
+              vy: Math.sin(a) * spd,
+              life: 0.5,
+              maxLife: 0.5,
+              color: node.color || '#F5A623',
+              size: 3 + Math.random() * 4,
+            });
+          }
 
-            // Play pickup sound
-            soundFx.collect();
+          if (s.score % 6 === 0) {
+            const quote = KING_QUOTES[(s.score / 6) % KING_QUOTES.length];
+            setKingQuote(quote);
+          }
 
-            // Spawn celebration particles
-            const screenX = s.docX;
-            const screenY = s.docY - window.scrollY;
-            for (let p = 0; p < 8; p++) {
-              const a = Math.random() * Math.PI * 2;
-              const spd = 70 + Math.random() * 150;
-              s.particles.push({
-                x: screenX,
-                y: screenY,
-                vx: Math.cos(a) * spd,
-                vy: Math.sin(a) * spd,
-                life: 0.5,
-                maxLife: 0.5,
-                color: node.color || '#F5A623',
-                size: 3 + Math.random() * 4,
-              });
-            }
-
-            // King of All Cosmos commentary
-            if (s.score % 6 === 0) {
-              const quote = KING_QUOTES[(s.score / 6) % KING_QUOTES.length];
-              setKingQuote(quote);
-            }
-
-            if (s.score >= 50) {
-              setGameWon(true);
-            }
-          } else {
-            // Node is too heavy: bounce back gently
-            const nx = (s.docX - node.docX) / dist;
-            const ny = (s.docY - node.docY) / dist;
-            s.vx += nx * 140;
-            s.vy += ny * 140;
+          if (s.score >= 50) {
+            setGameWon(true);
           }
         }
       }
 
-      // --- 4. Render Canvas Overlay ---
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      const screenBallX = s.docX;
-      const screenBallY = s.docY - window.scrollY;
-
-      // Draw burst particles
+      // --- 5. Render Particle Effects on 2D Overlay ---
+      pCtx.clearRect(0, 0, pCanvas.width, pCanvas.height);
       for (let i = s.particles.length - 1; i >= 0; i--) {
         const p = s.particles[i];
         p.x += p.vx * dt;
@@ -475,84 +695,16 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
           continue;
         }
         const alpha = p.life / p.maxLife;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
-        ctx.fillStyle = p.color;
-        ctx.globalAlpha = alpha;
-        ctx.fill();
-        ctx.globalAlpha = 1;
+        pCtx.beginPath();
+        pCtx.arc(p.x, p.y - window.scrollY, p.size * alpha, 0, Math.PI * 2);
+        pCtx.fillStyle = p.color;
+        pCtx.globalAlpha = alpha;
+        pCtx.fill();
+        pCtx.globalAlpha = 1;
       }
 
-      // Katamari Ambient Aura
-      const aura = ctx.createRadialGradient(
-        screenBallX, screenBallY, s.radius * 0.5,
-        screenBallX, screenBallY, s.radius * 2.3
-      );
-      aura.addColorStop(0, 'rgba(245, 166, 35, 0.32)');
-      aura.addColorStop(1, 'rgba(245, 166, 35, 0)');
-      ctx.beginPath();
-      ctx.arc(screenBallX, screenBallY, s.radius * 2.3, 0, Math.PI * 2);
-      ctx.fillStyle = aura;
-      ctx.fill();
-
-      // Draw attached items in the back (behind the sphere)
-      drawAttachedLayer(ctx, s, screenBallX, screenBallY, false);
-
-      // --- Draw 3D-Shaded Katamari Ball ---
-      ctx.save();
-      ctx.translate(screenBallX, screenBallY);
-
-      // Multi-layer Katamari Sphere
-      const sphereGrad = ctx.createRadialGradient(
-        -s.radius * 0.35, -s.radius * 0.35, s.radius * 0.08,
-        0, 0, s.radius
-      );
-      sphereGrad.addColorStop(0, '#FFFBEB');
-      sphereGrad.addColorStop(0.25, '#F5A623');
-      sphereGrad.addColorStop(0.7, '#D97706');
-      sphereGrad.addColorStop(1, '#78350F');
-
-      ctx.beginPath();
-      ctx.arc(0, 0, s.radius, 0, Math.PI * 2);
-      ctx.fillStyle = sphereGrad;
-      ctx.fill();
-      ctx.lineWidth = 2.5;
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
-      ctx.stroke();
-
-      // Iconic colorful Katamari bumps orbiting in 3D
-      const bumpColors = ['#EC4899', '#38BDF8', '#10B981', '#A855F7', '#F59E0B', '#EF4444'];
-      const numBumps = 14;
-      for (let b = 0; b < numBumps; b++) {
-        const phi = (b / numBumps) * Math.PI * 2 + s.rollPhi;
-        const theta = ((b % 5) - 2) * 0.6;
-
-        const bx = Math.cos(phi) * Math.cos(theta) * (s.radius * 0.78);
-        const by = Math.sin(theta) * (s.radius * 0.78);
-        const bz = Math.sin(phi) * Math.cos(theta);
-
-        if (bz > -0.25) {
-          const bumpRadius = Math.max(4, s.radius * 0.13) * (0.8 + bz * 0.3);
-          ctx.beginPath();
-          ctx.arc(bx, by, bumpRadius, 0, Math.PI * 2);
-          ctx.fillStyle = bumpColors[b % bumpColors.length];
-          ctx.fill();
-          ctx.strokeStyle = '#FFFFFF';
-          ctx.lineWidth = 1.2;
-          ctx.stroke();
-        }
-      }
-
-      // Center coffee logo stamp ☕
-      ctx.font = `${Math.max(16, s.radius * 0.5)}px sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('☕', 0, 0);
-
-      ctx.restore();
-
-      // Draw attached items in front (in front of the sphere)
-      drawAttachedLayer(ctx, s, screenBallX, screenBallY, true);
+      // Render Three.js Scene
+      renderer.render(scene, camera);
 
       rafRef.current = requestAnimationFrame(loop);
     };
@@ -561,6 +713,8 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
 
     return () => {
       cancelAnimationFrame(rafRef.current);
+      document.documentElement.style.scrollBehavior = originalHtmlScroll;
+      document.body.style.scrollBehavior = originalBodyScroll;
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
@@ -569,76 +723,41 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
       window.removeEventListener('mouseup', handleMouseUp);
       window.removeEventListener('touchmove', handleTouchMove);
       window.removeEventListener('touchend', handleTouchEnd);
+
+      // Clean up Three.js WebGL resources
+      renderer.dispose();
+      coreGeo.dispose();
+      coreMat.dispose();
+      vertexIco.dispose();
+      shadowGeo.dispose();
+      shadowMat.dispose();
+      shadowTex.dispose();
+
       restoreElements();
     };
-  }, [isOpen, scanPortfolioElements, restoreElements, onClose]);
-
-  // Render items physically stuck and tumbling around the Katamari ball in 3D
-  const drawAttachedLayer = (
-    ctx: CanvasRenderingContext2D,
-    s: typeof stateRef.current,
-    cx: number,
-    cy: number,
-    frontLayer: boolean
-  ) => {
-    for (const item of s.attached) {
-      const currentPhi = item.phi + s.rollPhi;
-      const currentTheta = item.theta;
-
-      const px = Math.cos(currentPhi) * Math.cos(currentTheta) * item.orbitDist;
-      const py = Math.sin(currentTheta) * item.orbitDist;
-      const pz = Math.sin(currentPhi) * Math.cos(currentTheta);
-
-      const isFront = pz >= 0;
-      if (isFront !== frontLayer) continue;
-
-      ctx.save();
-      ctx.translate(cx + px, cy + py);
-
-      const scale = Math.max(0.4, 0.72 + pz * 0.35);
-      ctx.scale(scale, scale);
-      ctx.rotate(currentPhi + Math.PI / 4);
-
-      const badgeW = Math.min(Math.max(item.width * 0.45, 44), 110);
-      const badgeH = 20;
-
-      // Dark badge backing
-      ctx.fillStyle = 'rgba(12, 14, 22, 0.94)';
-      ctx.beginPath();
-      ctx.roundRect(-badgeW / 2, -badgeH / 2, badgeW, badgeH, 10);
-      ctx.fill();
-
-      // Border matching element's color
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = item.color || '#F5A623';
-      ctx.stroke();
-
-      // Label text
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '10px Inter, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(item.text.slice(0, 14), 0, 0);
-
-      ctx.restore();
-    }
-  };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
   return (
-    <>
-      {/* ── Fixed Transparent Canvas Overlay ── */}
+    <div ref={containerRef}>
+      {/* ── Fixed Three.js WebGL Canvas Overlay ── */}
       <canvas
         ref={canvasRef}
         className="katamari-layer"
-        style={{ pointerEvents: 'none' }}
+        style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9990 }}
+      />
+
+      {/* ── Fixed Particle Effects Canvas ── */}
+      <canvas
+        ref={particleCanvasRef}
+        style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 9991 }}
       />
 
       {/* ── Top Katamari HUD Bar ── */}
       <div className="katamari-hud">
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '18px' }}>☕</span>
+          <KatamariIcon size={24} />
           <span style={{ fontWeight: 800, color: 'var(--amber)', letterSpacing: '0.04em' }}>
             KATAMARI PORTFOLIO
           </span>
@@ -677,24 +796,6 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
 
         <span style={{ color: 'rgba(255,255,255,0.2)' }}>|</span>
 
-        {/* Control mode badge */}
-        <div
-          title="Switch control mode (WASD or Mouse)"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '5px',
-            fontSize: '11px',
-            color: 'var(--text-muted)',
-            fontFamily: 'var(--font-mono)',
-          }}
-        >
-          {controlMode === 'keyboard' ? <Keyboard size={12} /> : <MousePointer size={12} />}
-          <span>{controlMode === 'keyboard' ? 'WASD / Keys' : 'Mouse Follow'}</span>
-        </div>
-
-        <span style={{ color: 'rgba(255,255,255,0.2)' }}>|</span>
-
         {/* Reset / Restore Button */}
         <button
           onClick={restoreElements}
@@ -720,7 +821,7 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
 
         {/* Exit Button */}
         <button
-          onClick={onClose}
+          onClick={() => onCloseRef.current()}
           style={{
             background: 'rgba(239, 68, 68, 0.15)',
             border: '1px solid rgba(239, 68, 68, 0.35)',
@@ -771,19 +872,51 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
         </div>
       </div>
 
-      {/* ── Vertical Document Mini-Map ── */}
-      <div className="katamari-minimap" title="Portfolio Map Scroll Position">
-        <Navigation size={12} style={{ color: 'var(--amber)', margin: '0 auto' }} />
-        <div style={{ position: 'relative', flex: 1, width: '100%', margin: '8px 0' }}>
+      {/* ── Vertical Interactive Document Mini-Map with Section Warps ── */}
+      <div className="katamari-minimap" title="Portfolio Map">
+        <Navigation size={12} style={{ color: 'var(--amber)', margin: '0 auto 4px' }} />
+        
+        {/* Section Jump Quick Buttons */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', margin: 'auto 0' }}>
+          {SECTIONS.map((sec) => (
+            <button
+              key={sec.id}
+              onClick={() => warpToSection(sec.id)}
+              title={`Warp to ${sec.label}`}
+              style={{
+                background: 'rgba(255,255,255,0.06)',
+                border: '1px solid rgba(255,255,255,0.1)',
+                borderRadius: '4px',
+                color: 'var(--text-secondary)',
+                fontSize: '7.5px',
+                padding: '2px 0',
+                cursor: 'pointer',
+                textAlign: 'center',
+                fontFamily: 'var(--font-mono)',
+                transition: 'all 0.15s',
+              }}
+              onMouseOver={(e) => {
+                e.currentTarget.style.background = 'rgba(245,166,35,0.3)';
+                e.currentTarget.style.color = '#FFF';
+              }}
+              onMouseOut={(e) => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.06)';
+                e.currentTarget.style.color = 'var(--text-secondary)';
+              }}
+            >
+              {sec.label[0]}
+            </button>
+          ))}
+        </div>
+
+        {/* Position Indicator Marker */}
+        <div style={{ position: 'relative', width: '100%', height: '30px' }}>
           <div
             className="katamari-minimap-marker"
-            style={{ top: `${Math.min(95, Math.max(5, scrollProgress * 100))}%` }}
+            style={{ top: `${Math.min(90, Math.max(10, scrollProgress * 100))}%` }}
           >
-            ☕
+            <KatamariIcon size={14} />
           </div>
-        </div>
-        <div style={{ fontSize: '8px', color: 'var(--text-dim)', textAlign: 'center', fontFamily: 'var(--font-mono)' }}>
-          MAP
         </div>
       </div>
 
@@ -815,10 +948,11 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
             <kbd style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px', color: '#FFF' }}>WASD</kbd>
             {' or '}
             <kbd style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px', color: '#FFF' }}>Mouse Drag</kbd>
-            {' to roll across the portfolio!'}
+            {' to roll through all sections!'}
           </span>
           <span>•</span>
-          <span>
+          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <Zap size={13} style={{ color: 'var(--amber)' }} />
             <kbd style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px', color: '#FFF' }}>Shift</kbd>
             {' Turbo'}
           </span>
@@ -858,12 +992,14 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
               maxWidth: '520px',
             }}
           >
-            <div style={{ fontSize: '64px', marginBottom: '16px' }}>✨👑✨</div>
+            <div style={{ marginBottom: '16px' }}>
+              <KatamariIcon size={64} animated />
+            </div>
             <h2 style={{ fontSize: '2.2rem', fontWeight: 900, color: 'var(--amber)', letterSpacing: '-0.03em', marginBottom: '8px' }}>
               The Kaufee Constellation!
             </h2>
             <p style={{ color: 'var(--text-secondary)', fontSize: '15px', lineHeight: 1.6, marginBottom: '20px' }}>
-              Magnificent! You rolled up <strong style={{ color: '#FFF' }}>{itemsCollected} engineering elements</strong> directly from the portfolio into a glorious new star in the heavens!
+              Magnificent! You rolled up <strong style={{ color: '#FFF' }}>{itemsCollected} engineering elements</strong> directly from Sai Tarun's portfolio into a glorious new 3D star in the heavens!
             </p>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
               <button
@@ -874,7 +1010,7 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
                 Roll Again
               </button>
               <button
-                onClick={onClose}
+                onClick={() => onCloseRef.current()}
                 className="btn btn-primary"
                 style={{ padding: '10px 24px', borderRadius: 'var(--r-full)' }}
               >
@@ -884,6 +1020,6 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 };

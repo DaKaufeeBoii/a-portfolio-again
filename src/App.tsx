@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { ProjectShowcase } from './components/ProjectShowcase';
@@ -12,6 +12,7 @@ import { BuilderDialogueDrawer } from './components/BuilderDialogueDrawer';
 import { ResumeModal } from './components/ResumeModal';
 import { CommandPalette } from './components/CommandPalette';
 import { KatamariGame } from './components/KatamariGame';
+import { KatamariIcon } from './components/KatamariIcon';
 import { useWorldStore } from './state/stores';
 import { soundFx } from './utils/soundEffects';
 
@@ -102,17 +103,19 @@ export default function App() {
     soundFx.enabled = next;
   };
 
-  const handleUnlockSecret = (id: string) => {
-    if (!unlockedEggs.includes(id)) {
-      setUnlockedEggs((prev) => [...prev, id]);
-    }
-  };
+  const handleUnlockSecret = useCallback((id: string) => {
+    setUnlockedEggs((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
 
-  const openKatamari = () => {
+  const openKatamari = useCallback(() => {
     setKatamariOpen(true);
     setKatamariHint(false);
     handleUnlockSecret('katamari_found');
-  };
+  }, [handleUnlockSecret]);
+
+  const handleCloseKatamari = useCallback(() => {
+    setKatamariOpen(false);
+  }, []);
 
   return (
     <div style={{ position: 'relative', width: '100%', minHeight: '100dvh', overflowX: 'hidden' }}>
@@ -137,6 +140,7 @@ export default function App() {
         <Hero
           onOpenResume={() => setResumeModalOpen(true)}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+          onOpenKatamari={openKatamari}
         />
 
         <ProjectShowcase />
@@ -178,13 +182,13 @@ export default function App() {
             maxWidth: '340px',
           }}
         >
-          <span style={{ fontSize: '28px' }}>☕</span>
+          <KatamariIcon size={32} animated />
           <div>
             <div style={{ fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)', marginBottom: '2px' }}>
               Psst... there's a secret!
             </div>
             <div style={{ fontSize: '11.5px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-              Type <strong style={{ color: 'var(--amber)' }}>katamari</strong> or press ↑↑↓↓←→←→BA
+              Click the Katamari ball, type <strong style={{ color: 'var(--amber)' }}>katamari</strong>, or press ↑↑↓↓←→←→BA
             </div>
           </div>
           <button
@@ -234,46 +238,46 @@ export default function App() {
       {/* ── 🎮 Katamari Secret Game ── */}
       <KatamariGame
         isOpen={katamariOpen}
-        onClose={() => setKatamariOpen(false)}
+        onClose={handleCloseKatamari}
       />
 
-      {/* ── Katamari trigger button (floating, discreet) ── */}
+      {/* ── Katamari trigger button (floating, discreet Google-style ball) ── */}
       <button
         onClick={openKatamari}
-        title="Secret Game (type 'katamari' or Konami code)"
+        title="Roll Katamari (type 'katamari' or Konami code)"
         style={{
           position: 'fixed',
           bottom: '24px',
           left: '24px',
           zIndex: 150,
-          width: '38px',
-          height: '38px',
+          width: '42px',
+          height: '42px',
           borderRadius: '50%',
-          background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.08)',
-          color: 'rgba(255,255,255,0.15)',
+          background: 'rgba(8, 8, 16, 0.75)',
+          border: '1px solid rgba(255, 255, 255, 0.12)',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: '18px',
-          transition: 'all 0.2s ease',
-          backdropFilter: 'blur(8px)',
+          padding: 0,
+          transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
+          backdropFilter: 'blur(12px)',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
         }}
         onMouseOver={(e) => {
-          e.currentTarget.style.background = 'rgba(245,166,35,0.12)';
-          e.currentTarget.style.borderColor = 'rgba(245,166,35,0.35)';
-          e.currentTarget.style.color = 'var(--amber)';
-          e.currentTarget.style.transform = 'scale(1.1)';
+          e.currentTarget.style.background = 'rgba(245,166,35,0.18)';
+          e.currentTarget.style.borderColor = 'rgba(245,166,35,0.5)';
+          e.currentTarget.style.boxShadow = '0 6px 24px rgba(245,166,35,0.35)';
+          e.currentTarget.style.transform = 'scale(1.15) rotate(15deg)';
         }}
         onMouseOut={(e) => {
-          e.currentTarget.style.background = 'rgba(255,255,255,0.03)';
-          e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
-          e.currentTarget.style.color = 'rgba(255,255,255,0.15)';
-          e.currentTarget.style.transform = 'scale(1)';
+          e.currentTarget.style.background = 'rgba(8, 8, 16, 0.75)';
+          e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.12)';
+          e.currentTarget.style.boxShadow = '0 4px 16px rgba(0,0,0,0.4)';
+          e.currentTarget.style.transform = 'scale(1) rotate(0deg)';
         }}
       >
-        ☕
+        <KatamariIcon size={24} animated />
       </button>
     </div>
   );

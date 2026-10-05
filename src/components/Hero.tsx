@@ -10,12 +10,14 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { Github, Linkedin } from './SocialIcons';
+import { KatamariIcon } from './KatamariIcon';
 import { PERSONAL_INFO } from '../data/portfolioData';
 import { soundFx } from '../utils/soundEffects';
 
 interface HeroProps {
   onOpenResume: () => void;
   onOpenCommandPalette: () => void;
+  onOpenKatamari?: () => void;
 }
 
 const codeSnippets = {
@@ -54,7 +56,7 @@ await agent.invoke({
     return Score(precision=f1, ok=True)`,
 };
 
-export const Hero: React.FC<HeroProps> = ({ onOpenResume, onOpenCommandPalette }) => {
+export const Hero: React.FC<HeroProps> = ({ onOpenResume, onOpenCommandPalette, onOpenKatamari }) => {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'agent' | 'telemetry' | 'evals'>('agent');
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -200,6 +202,43 @@ export const Hero: React.FC<HeroProps> = ({ onOpenResume, onOpenCommandPalette }
               <div className="pill" style={{ fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
                 CGPA: 8.49 · CSE AI/ML
               </div>
+
+              {onOpenKatamari && (
+                <button
+                  onClick={() => {
+                    soundFx.click();
+                    onOpenKatamari();
+                  }}
+                  title="Click to play Katamari on this page (just like Google easter egg!)"
+                  className="pill"
+                  style={{
+                    cursor: 'pointer',
+                    background: 'rgba(245, 166, 35, 0.12)',
+                    borderColor: 'rgba(245, 166, 35, 0.35)',
+                    color: 'var(--amber)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '7px',
+                    padding: '5px 12px',
+                    transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.05)';
+                    e.currentTarget.style.boxShadow = '0 0 16px rgba(245, 166, 35, 0.35)';
+                    e.currentTarget.style.borderColor = 'var(--amber)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                    e.currentTarget.style.boxShadow = 'none';
+                    e.currentTarget.style.borderColor = 'rgba(245, 166, 35, 0.35)';
+                  }}
+                >
+                  <KatamariIcon size={18} />
+                  <span style={{ fontWeight: 700, fontSize: '11.5px', fontFamily: 'var(--font-mono)' }}>
+                    Katamari
+                  </span>
+                </button>
+              )}
             </div>
 
             {/* Pre-label */}
@@ -228,7 +267,7 @@ export const Hero: React.FC<HeroProps> = ({ onOpenResume, onOpenCommandPalette }
               marginBottom: '28px',
               color: 'var(--text-primary)',
             }}>
-              Sai Tarun
+              Sai Tarun Reddy
               <br />
               <span className="gradient-amber">Velagala</span>
             </h1>

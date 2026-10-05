@@ -75,14 +75,14 @@ function circleIntersectsRect(
 // Generate dynamic 3D text badge mesh attached to the Katamari ball
 function createAttached3DBadge(text: string, color: string, ballRadius: number, ballGroup: THREE.Group): THREE.Mesh {
   const canvas = document.createElement('canvas');
-  canvas.width = 160;
-  canvas.height = 44;
+  canvas.width = 180;
+  canvas.height = 48;
   const ctx = canvas.getContext('2d')!;
 
   // Rounded pill background
   ctx.fillStyle = 'rgba(10, 12, 20, 0.95)';
   ctx.beginPath();
-  ctx.roundRect(4, 4, 152, 36, 18);
+  ctx.roundRect(4, 4, 172, 40, 20);
   ctx.fill();
 
   // Vibrant accent border
@@ -92,10 +92,10 @@ function createAttached3DBadge(text: string, color: string, ballRadius: number, 
 
   // Label text
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = 'bold 15px sans-serif';
+  ctx.font = 'bold 16px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text.slice(0, 14), 80, 22);
+  ctx.fillText(text.slice(0, 16), 90, 24);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
@@ -106,7 +106,7 @@ function createAttached3DBadge(text: string, color: string, ballRadius: number, 
     side: THREE.DoubleSide,
   });
 
-  const geo = new THREE.PlaneGeometry(28, 8);
+  const geo = new THREE.PlaneGeometry(ballRadius * 0.72, ballRadius * 0.22);
   const mesh = new THREE.Mesh(geo, mat);
 
   // Position on outer sphere surface
@@ -135,7 +135,7 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
     onCloseRef.current = onClose;
   }, [onClose]);
 
-  const [diameterDisplay, setDiameterDisplay] = useState('24cm 6mm');
+  const [diameterDisplay, setDiameterDisplay] = useState('50cm 0mm');
   const [itemsCollected, setItemsCollected] = useState(0);
   const [totalItems, setTotalItems] = useState(0);
   const [kingQuote, setKingQuote] = useState(KING_QUOTES[0]);
@@ -144,8 +144,8 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
   const [scrollProgress, setScrollProgress] = useState(0);
 
   // Core physics & game state
-  // Notice: ball radius is kept constant (~32px) like Google's Katamari!
-  const BALL_RADIUS = 32;
+  // Ball radius is 50px (diameter 100px) which is ~7.8% of a 1280px screen (>5% of website size)
+  const BALL_RADIUS = 50;
 
   const stateRef = useRef<{
     docX: number;
@@ -175,8 +175,8 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
 
   // Calculate formatted diameter based on items collected
   const getSimulatedDiameter = (score: number) => {
-    const baseCm = 24.6;
-    const addedCm = score * 3.8;
+    const baseCm = 50.0;
+    const addedCm = score * 4.2;
     const totalCm = baseCm + addedCm;
 
     if (totalCm < 100) {
@@ -193,25 +193,26 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
   };
 
   // Scan live DOM elements on the portfolio
+  // STRICT RULE: Only absorb atomic bite-sized items (tech pills, chips, tags, small buttons, code tokens)
+  // Max size is at most 50% bigger than the ball (ballDiameter * 1.5 = 150px)
+  // NEVER absorb layout cards, project containers, or full-blown website sections!
   const scanPortfolioElements = useCallback(() => {
     const selector = [
       '.tech-pill',
-      '.badge',
-      '.metric-box',
-      '.hero-badge',
       '.skill-chip',
-      'button',
-      'h1',
-      'h2',
-      'h3',
-      'h4',
-      '.project-card',
-      '.stat-card',
-      'code',
+      '.hero-badge',
+      '.badge',
+      '.stat-val',
       'a.pill',
       'span.tag',
+      'span.badge-text',
+      'code',
+      'kbd',
       'p strong',
-      '.card'
+      'p em',
+      'li strong',
+      'button:not(.btn-hero):not(.btn-large)',
+      'span.label',
     ].join(', ');
 
     const elements = Array.from(document.querySelectorAll<HTMLElement>(selector));
@@ -221,8 +222,12 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
     const scrollX = window.scrollX || window.pageXOffset;
     const scrollY = window.scrollY || window.pageYOffset;
 
+    const ballDiameter = BALL_RADIUS * 2; // 100px
+    const maxAllowedSize = ballDiameter * 1.5; // strictly at most 50% bigger than the ball (150px)
+    const minAllowedSize = 8; // skip 0px or invisible items
+
     elements.forEach((el) => {
-      // Exclude Katamari game UI elements
+      // 1. Exclude Katamari game UI elements
       if (
         el.closest('.katamari-hud') ||
         el.closest('.katamari-layer') ||
@@ -232,35 +237,49 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
         return;
       }
 
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 8 && rect.height > 8 && rect.width < 1200 && rect.height < 900) {
-        const text = el.innerText?.trim().slice(0, 26) || el.tagName.toLowerCase();
-        if (!text) return;
-
-        const style = window.getComputedStyle(el);
-        const color = style.color || '#FFFFFF';
-        const bgColor = style.backgroundColor !== 'rgba(0, 0, 0, 0)'
-          ? style.backgroundColor
-          : 'rgba(245, 166, 35, 0.2)';
-
-        const left = rect.left + scrollX;
-        const top = rect.top + scrollY;
-
-        validNodes.push({
-          id: idCounter++,
-          el,
-          text,
-          left,
-          top,
-          right: left + rect.width,
-          bottom: top + rect.height,
-          width: rect.width,
-          height: rect.height,
-          color,
-          bgColor,
-          absorbed: false,
-        });
+      // 2. Reject ANY containers or elements containing child container blocks
+      if (
+        el.matches('section, article, main, header, footer, nav, aside, form, .project-card, .card, .stat-card, .metric-box, [class*="container"], [class*="wrapper"], [class*="grid"]') ||
+        el.querySelector('div, section, article, p, ul, ol, table')
+      ) {
+        return;
       }
+
+      const rect = el.getBoundingClientRect();
+      const maxDim = Math.max(rect.width, rect.height);
+      const minDim = Math.min(rect.width, rect.height);
+
+      // 3. Dimensional constraint: must be smaller or at most 50% bigger than the Katamari ball
+      if (minDim < minAllowedSize) return;
+      if (maxDim > maxAllowedSize) return; // Never absorb items > 150px!
+      if (rect.width * rect.height > maxAllowedSize * maxAllowedSize) return;
+
+      const text = el.innerText?.trim().slice(0, 24) || el.tagName.toLowerCase();
+      if (!text) return;
+
+      const style = window.getComputedStyle(el);
+      const color = style.color || '#FFFFFF';
+      const bgColor = style.backgroundColor !== 'rgba(0, 0, 0, 0)'
+        ? style.backgroundColor
+        : 'rgba(245, 166, 35, 0.2)';
+
+      const left = rect.left + scrollX;
+      const top = rect.top + scrollY;
+
+      validNodes.push({
+        id: idCounter++,
+        el,
+        text,
+        left,
+        top,
+        right: left + rect.width,
+        bottom: top + rect.height,
+        width: rect.width,
+        height: rect.height,
+        color,
+        bgColor,
+        absorbed: false,
+      });
     });
 
     stateRef.current.nodes = validNodes;
@@ -286,7 +305,7 @@ export const KatamariGame: React.FC<KatamariGameProps> = ({ isOpen, onClose }) =
     stateRef.current.attachedMeshes = [];
 
     stateRef.current.score = 0;
-    setDiameterDisplay('24cm 6mm');
+    setDiameterDisplay('50cm 0mm');
     setItemsCollected(0);
     setGameWon(false);
   }, []);
